@@ -17,24 +17,35 @@ def get_filtered_us_pool():
     """獲取全美股名單，並過濾市值、行業"""
     print("正在獲取並篩選全美股標的物...")
     tickers = set()
+    
+    # 💡 加入瀏覽器標頭，防止 Wikipedia 阻擋爬蟲 (403 Forbidden)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
     try:
+        # 1. 抓取 S&P 500 名單
         sp500_url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        sp500_table = pd.read_html(sp500_url)[0]
+        res_sp = requests.get(sp500_url, headers=headers, timeout=15)
+        sp500_table = pd.read_html(res_sp.text)[0]
         tickers.update(sp500_table['Symbol'].tolist())
         
+        # 2. 抓取 Nasdaq 100 名單
         ndx_url = "https://en.wikipedia.org/wiki/Nasdaq-100"
-        ndx_table = pd.read_html(ndx_url)[4]
+        res_ndx = requests.get(ndx_url, headers=headers, timeout=15)
+        ndx_table = pd.read_html(res_ndx.text)[4]
         col = 'Ticker' if 'Ticker' in ndx_table.columns else 'Symbol'
         tickers.update(ndx_table[col].tolist())
     except Exception as e:
-        print(f"獲取基礎名單失敗: {e}")
-        return ['AAPL', 'MSFT', 'AMZN', 'NVDA', 'GOOGL', 'META', 'TSLA']
+        print(f"網頁抓取失敗，啟動核心備用名單機制: {e}")
+        return ['AAPL', 'MSFT', 'AMZN', 'NVDA', 'GOOGL', 'META', 'TSLA', 'AMD', 'INTC', 'NFLX', 'QCOM', 'AVGO']
 
     raw_tickers = [str(t).replace('.', '-') for t in tickers if isinstance(t, str)]
     final_pool = []
     
     exclude_industries = ['Biotechnology', 'Airlines', 'Tobacco', 'Gambling', 'Casinos', 'Beverages—Wineries & Distilleries']
     
+    print(f"成功下載名單，開始過濾 {len(raw_tickers)} 隻美股行業與市值...")
     for ticker in raw_tickers:
         try:
             t_obj = yf.Ticker(ticker)
@@ -61,6 +72,7 @@ def get_filtered_us_pool():
                 
             final_pool.append(ticker)
         except Exception:
+            # 如果個別股票 info 獲取超時，安全起見保留在池中
             final_pool.append(ticker)
             
     print(f"過濾完畢！最終進入 500 日線篩選的優質股票共: {len(final_pool)} 隻")
@@ -68,11 +80,9 @@ def get_filtered_us_pool():
 
 def screen_500_day_ma_breakout(tickers):
     breakout_list = []
-    # 500日大約需要 2 年多的歷史數據，保險起見抓 3 年 (1000天)
     start_date = (datetime.now() - timedelta(days=1000)).strftime('%Y-%m-%d')
     
     try:
-        # 修改為 interval='1d' (日線數據)
         data = yf.download(tickers, start=start_date, interval='1d', group_by='ticker', progress=False)
     except Exception as e:
         print(f"批量下載日 K 線數據失敗: {e}")
@@ -87,7 +97,6 @@ def screen_500_day_ma_breakout(tickers):
             if len(df) < 500:
                 continue
                 
-            # 核心修改：計算 500日均線
             df['MA_500'] = df['Close'].rolling(window=500).mean()
             
             current_close = df['Close'].iloc[-1]
@@ -95,10 +104,9 @@ def screen_500_day_ma_breakout(tickers):
             prev_close = df['Close'].iloc[-2]
             prev_ma = df['MA_500'].iloc[-2]
             current_volume = df['Volume'].iloc[-1]
-            # 20日平均成交量
             avg_volume = df['Volume'].iloc[-20:].mean()
             
-            # 突破條件：前一日在線下，最新一日收在線上
+            # 突破條件
             if prev_close <= prev_ma and current_close > current_ma:
                 volume_ratio = current_volume / avg_volume
                 breakout_list.append({
@@ -113,8 +121,6 @@ def screen_500_day_ma_breakout(tickers):
 
 if __name__ == "__main__":
     filtered_pool = get_filtered_us_pool()
-    
-    # 執行 500 日線突破篩選
     results = screen_500_day_ma_breakout(filtered_pool)
     
     message_title = f"🎯 *【Agent 定製化美股篩選報告】*\n日期: {datetime.now().strftime('%Y-%m-%d')}\n過濾條件: 市值>10億 | 剔除生技/航空/煙/酒/賭\n指標條件: *突破 500日均線*\n掃描總數: {len(filtered_pool)} 隻優質美股\n\n"
